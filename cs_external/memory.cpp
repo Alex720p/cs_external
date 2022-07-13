@@ -22,12 +22,9 @@ bool memory::open_handle(const std::wstring& proc_name) {
 	return true; //handle opened to desired process
 }
 
-std::uintptr_t memory::get_module_address(const std::wstring& mod_name) {
+bool memory::get_module_info(const std::wstring& mod_name) {
 	if (!this->m_proc_id)
 		throw std::runtime_error("m_proc_id has to be initialized in order to get the module of the process");
-
-	if (this->m_proc_modules.count(mod_name)) //already found the module once
-		return this->m_proc_modules[mod_name];
 
 	HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, m_proc_id);
 	MODULEENTRY32 mod_entry;
@@ -35,13 +32,44 @@ std::uintptr_t memory::get_module_address(const std::wstring& mod_name) {
 	if (Module32First(snapshot, &mod_entry)) {
 		while (Module32Next(snapshot, &mod_entry)) {
 			if (!mod_name.compare(mod_entry.szModule)) { //in this case == 0 means that the strings are 'equal'
-				this->m_proc_modules.insert(std::pair<std::wstring, std::uintptr_t>(mod_name, reinterpret_cast<std::uintptr_t>(mod_entry.modBaseAddr))); //switch to unordered map
+				memory::module_info_t module_info = { reinterpret_cast<std::uintptr_t>(mod_entry.modBaseAddr), mod_entry.modBaseSize };
+				this->m_proc_modules[mod_name] = module_info;
 				CloseHandle(snapshot);
-				return (std::uintptr_t)mod_entry.modBaseAddr;
+				return true;
 			}
 		}
 	}
-
 	CloseHandle(snapshot);
-	return 0; //module not found
+	return false; //module not found
+}
+
+std::uintptr_t memory::find_pattern(std::uintptr_t module_base_address, std::size_t module_size, const char* mask, const char* wildcards, int offset) { //todo: add some error handling and exceptions
+	MEMORY_BASIC_INFORMATION mem_basic_info = { 0 };
+	VirtualQueryEx(this->m_proc_handle, reinterpret_cast<LPCVOID>(module_base_address), &mem_basic_info, sizeof(mem_basic_info)); //getting the region size in mem_basic_info
+
+	printf("line = %i    ,", strlen(mask));
+	for (int i = 0; i < module_size; i += mem_basic_info.RegionSize) { //going throught the mem pages
+		char* page_buffer = new char[mem_basic_info.RegionSize];
+		SIZE_T tt = 0;
+		ReadProcessMemory(this->m_proc_handle, reinterpret_cast<LPCVOID>(module_base_address + i), page_buffer, mem_basic_info.RegionSize, &tt);
+
+
+
+		for (int j = 0; j < mem_basic_info.RegionSize - strlen(wildcards); j += strlen(wildcards)) {
+			for (int k = 0; k < strlen(wildcards); k++) {
+				if (page_buffer[j + k] == mask[k] || wildcards[k] == '?')
+					if (k == strlen(wildcards) - 1)
+						return i + j - offset; // mask found !
+					else
+						continue;
+
+
+				if (page_buffer[j + k] != mask[k])
+					break; //sequence not matching mask, break and go next
+			}
+		}
+		delete[] page_buffer;
+	}
+
+	return 0;
 }
